@@ -1,0 +1,86 @@
+####################################################################
+#### viya-services-status.yml                                   ####
+####################################################################
+#### Author: SAS Institute Inc.                                 ####
+####################################################################
+#### DISCLAIMER                                                 ####
+####################################################################
+#### This Ansible Playbook is provided as-is, without warranty  ####
+#### of any kind, either express or implied, including, but not ####
+#### limited to, the implied warranties of merchantability,     ####
+#### fitness for a particular purpose, or non-infringement.     ####
+#### SAS Institute shall not be liable whatsoever for any       ####
+#### damages arising out of the use of this documentation and   ####
+#### code, including any direct, indirect, or consequential     ####
+#### damages. SAS Institute reserves the right to alter or      ####
+#### abandon use of this documentation and code at any time.    ####
+#### In addition, SAS Institute will provide no support for the ####
+#### materials contained herein.                                ####
+####################################################################
+---
+- hosts: sas-all
+  become: yes
+  become_user: root
+  gather_facts: false
+  check_mode: no
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+    - name: Get SAS Viya Services
+      shell: "{{list_svas_cmd}}"
+      changed_when: false
+      register: svas_list_full
+
+    - name: Convert results to ansible variable
+      set_fact:
+        svas_list: "{{ svas_list_full.stdout_lines }}"
+
+    - name: Capture all SAS services status from Consul
+      script: "viya-svs.sh svastatus"
+      changed_when: false
+      register: svas_status
+
+    - set_fact:
+        cflag: true
+
+    - name: Set consul flag
+      set_fact:
+        cflag: false
+      when: svas_status.stdout|search('Consul is down')
+
+    - name: Display SAS service status from Configuration Server (Consul)
+      debug: msg="{{svas_status.stdout_lines}}"
+
+- hosts: httpproxy
+  become: yes
+  become_user: root
+  gather_facts: true
+  check_mode: no
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+    - block:
+
+      - name: Get url_scraping_cmd command
+        set_fact:
+          url_scraping_cmd: "{{sles_url_scraping_cmd}}"
+        when: ansible_os_family == 'Suse'
+
+      - name: Get url_scraping_cmd command
+        set_fact:
+          url_scraping_cmd: "{{rhel_url_scraping_cmd}}"
+        when: ansible_os_family == 'RedHat'
+
+      - name: Capture SAS Viya URLs from the Apache HTTP Proxy
+        shell: "{{url_scraping_cmd}}"
+        check_mode: no
+        changed_when: false
+        register: url_list
+
+      - name: Display SAS Viya URLs
+        debug:
+          msg:
+           - "Available Viya services URL listing:"
+           - "{{url_list.stdout_lines}}"
+
+      when: cflag

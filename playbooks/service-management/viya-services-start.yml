@@ -1,0 +1,195 @@
+####################################################################
+#### viya-services-start.yml                                    ####
+####################################################################
+#### Author: SAS Institute Inc.                                 ####
+####################################################################
+#### DISCLAIMER                                                 ####
+####################################################################
+#### This Ansible Playbook is provided as-is, without warranty  ####
+#### of any kind, either express or implied, including, but not ####
+#### limited to, the implied warranties of merchantability,     ####
+#### fitness for a particular purpose, or non-infringement.     ####
+#### SAS Institute shall not be liable whatsoever for any       ####
+#### damages arising out of the use of this documentation and   ####
+#### code, including any direct, indirect, or consequential     ####
+#### damages. SAS Institute reserves the right to alter or      ####
+#### abandon use of this documentation and code at any time.    ####
+#### In addition, SAS Institute will provide no support for the ####
+#### materials contained herein.                                ####
+####################################################################
+---
+- hosts: sas-all
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+    - name: Check the accessibility of the hosts
+      ping:
+
+    - name: Check disk space for Viya log directory
+      script: viya-svs.sh checkspace /opt/sas/viya/config/var/log {{log_diskspace_minimum}}
+      changed_when: false
+      check_mode: no
+
+- hosts: consul
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start SAS Primary Consul Server
+      script: viya-svs.sh start sas-viya-consul-default
+    - name: Start SAS Secret Manager (Vault)
+      script: viya-svs.sh start sas-viya-vault-default
+
+- hosts: sas-all:!consul
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start SAS Local Consul Servers
+      script: viya-svs.sh start sas-viya-consul-default
+
+- hosts: rabbitmq
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start SAS Message Broker (RabbitMQ)
+      script: viya-svs.sh start sas-viya-rabbitmq-server-default
+
+- hosts: sasdatasvrc
+  become: yes
+  become_user: root
+  any_errors_fatal: true
+  vars_files:
+    - ../../../vars.yml
+  tasks:
+    - name: Start SAS Infrastructure Data Server Consul Template
+      script: viya-svs.sh start sas-viya-sasdatasvrc-{{item.SERVICE_NAME}}-node{{item.NODE_NUMBER}}-ct-pg_hba
+      with_items:
+        - '{{ INVOCATION_VARIABLES[inventory_hostname][''sasdatasvrc''] }}'
+
+    - name: Start SAS Infrastructure Data Server Consul Template
+      script: viya-svs.sh start sas-viya-sasdatasvrc-{{item.SERVICE_NAME}}-node{{item.NODE_NUMBER}}-ct-postgresql
+      with_items:
+        - '{{ INVOCATION_VARIABLES[inventory_hostname][''sasdatasvrc''] }}'
+
+- hosts: pgpoolc
+  become: yes
+  become_user: root
+  any_errors_fatal: true
+  vars_files:
+    - ../../../vars.yml
+  tasks:
+    - name: Start SAS Infrastructure Data Server
+      script: viya-svs.sh start sas-viya-sasdatasvrc-{{INVOCATION_VARIABLES[inventory_hostname]['pgpoolc'][0]['SERVICE_NAME'] }}{{item}}
+      with_items:
+        - '-pgpool0-ct-pcp'
+        - '-pgpool0-ct-pgpool'
+        - '-pgpool0-ct-pool_hba'
+        - ''
+
+    - name: Check SAS Infrastructure Data Server status
+      script: viya-svs.sh checkdb
+      changed_when: false
+      register: dbrc
+      check_mode: no
+
+    - name: Display SAS Infrastructure Data Server status
+      debug: var=dbrc.stdout_lines
+      when: ansible_check_mode
+
+    - name: Fail task if DB is not running
+      fail:
+        msg:
+         - "ERROR: PGPool is not running"
+         - "This issue needs to be addressed before rerun the playbook."
+      when: not ansible_check_mode and dbrc.stdout|search('PGPool is not running')
+
+- hosts: httpproxy
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start SAS HTTP proxy
+      script: viya-svs.sh start sas-viya-httpproxy-default
+
+- hosts: sas-casserver-primary
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: Start SAS CAS servers
+      script: viya-svs.sh startcas
+
+- hosts: sas-all
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Start SAS multi-tenant services
+      script: viya-svs.sh startmt
+
+- hosts: consul,rabbitmq,httpproxy,pgpoolc,sasdatasvrc,sas-casserver-primary
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+    - name: Check SAS svas command existence
+      stat:
+        path: /etc/init.d/sas-viya-all-services
+      register: svas_rc
+
+    - name: Start SAS all services which might take a while
+      shell: /etc/init.d/sas-viya-all-services start
+      register: svas1
+      when: svas_rc.stat.exists == true
+
+- hosts: sas-all:!consul:!rabbitmq:!httpproxy:!pgpoolc:!sasdatasvrc:!sas-casserver-primary
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+    - name: Check SAS svas command existence
+      stat:
+        path: /etc/init.d/sas-viya-all-services
+      register: svas_rc
+
+    - name: Start SAS all services which might take a while
+      shell: /etc/init.d/sas-viya-all-services start
+      register: svas2
+      when: svas_rc.stat.exists == true
+
+- hosts: sas-all
+  become: yes
+  become_user: root
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - viya-services-vars.yml
+  tasks:
+
+    - name: Rerun start SAS services if needed
+      shell: /etc/init.d/sas-viya-all-services start
+      when: not ansible_check_mode and ((svas1 is defined and (svas1.stdout|search('Failed!') or svas1.stdout|search('timeout'))) or (svas2 is defined and (svas2.stdout|search('Failed!') or svas2.stdout|search('timeout'))))
+      register: svasall
+      until: svasall.stdout.find('Failed!') == -1 and svasall.stdout.find('timeout') == -1
+      retries: "{{svas_retry_count}}"
+      delay: "{{svas_delay_timer}}"
+
